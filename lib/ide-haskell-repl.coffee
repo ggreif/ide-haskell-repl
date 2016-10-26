@@ -100,6 +100,9 @@ module.exports = IdeHaskellRepl =
           old = @autoRepeatMap.get(ed) ? atom.config.get('ide-haskell-repl.autoReloadRepeat')
           @autoRepeatMap.set(ed, not old)
 
+    if process.platform is 'win32'
+      @disposables.add atom.commands.add 'atom-workspace',
+        'ide-haskell-repl:install-ghci-wrapper': => @installGhciWrapper()
 
     @disposables.add atom.menu.add [
       'label': 'Haskell IDE'
@@ -141,6 +144,59 @@ module.exports = IdeHaskellRepl =
         disp.dispose()
       disp.add model.onDidDestroy ->
         disp.dispose()
+
+  installGhciWrapper: ->
+    PREFERRED_VERSION = /^v0.0.\d+$/
+    download = (url) ->
+      dir = atom.configDirPath
+      http = require 'https'
+      {sep} = require 'path'
+      fs = require 'fs'
+      dest = "#{dir}#{sep}ghci-wrapper.exe"
+      file = fs.createWriteStream(dest)
+      http.get url, (response) ->
+        if response.statusCode is 302
+          return download(response.headers.location)
+        else if response.statusCode isnt 200
+          atom.notifications.addError "GitHub release responded with code #{response.statusCode}",
+            dismissable: true
+          return
+        response.pipe(file)
+        file.on 'finish', ->
+          file.close (err) ->
+            if err?
+              fs.unlink(dest)
+              atom.notifications.addError(err.message, dismissable: true)
+            else
+              atom.config.set('ide-haskell-repl.ghciWrapperPath', dest)
+              atom.notifications.addSuccess('Installation complete')
+      .on 'error', (err) ->
+        fs.unlink(dest)
+        atom.notifications.addError(err.message, dismissable: true)
+    request = require 'request'
+    getReleases = (page = 1) ->
+      reqobj =
+        url: "https://api.github.com/repos/atom-haskell/win-ghci-wrapper/releases?page=#{page}"
+        # url: "https://api.github.com/repos/atom-haskell/win-ghci-wrapper/releases?page=#{page}"
+        json: true
+        headers: {'User-Agent': 'request'}
+      request reqobj, (err, response, body) ->
+        if err?
+          atom.notifications.addError(err.message, dismissable: true)
+        else if response.statusCode is 200
+          if body.length is 0
+            atom.notifications.addError "Couldn't find matching release",
+              dismissable: true
+            return
+          [bestVersion] =
+            body.filter ({tag_name, assets}) ->
+              PREFERRED_VERSION.test(tag_name) and assets.length > 0
+          unless bestVersion?
+            return getReleases(page + 1)
+          download(bestVersion.assets[0].browser_download_url)
+        else
+          atom.notifications.addError("GitHub API responded with code #{response.statusCode}", dismissable: true)
+    getReleases()
 
   deactivate: ->
     @disposables.dispose()
